@@ -2,6 +2,7 @@ import numpy as np
 import warnings
 from misc import *
 import scipy.special as spc
+from interpolate import Interpolator
 
 
 class Layer:
@@ -74,6 +75,8 @@ class CascadedPhaseGenerator:
             self.pinned_mempool = cp.get_default_pinned_memory_pool()
 
         self.layers = []
+        
+        self.interpolator = Interpolator()
 
 
     def AddLayer(self, weight, r0, L0, wind_speed, wind_direction, boiling_factor):
@@ -87,11 +90,11 @@ class CascadedPhaseGenerator:
         self.f  = np.zeros(arrays_shape,    dtype=self.datafloat_cpu)
         self.df = np.zeros(self.n_cascades, dtype=self.datafloat_cpu)
         
-        select_middle = lambda N: np.s_[N//2-N//6:N//2+N//6+N%2, N//2-N//6:N//2+N//6+N%2, :]
-        self.crops = [np.s_[0:self.N, 0:self.N, :]] # 1st one selects the whole image
+        select_middle = lambda N: np.s_[N//2-N//6:N//2+N//6+N%2, N//2-N//6:N//2+N//6+N%2, :] # selects the middle 1/3 quandrant of the image
+        self.crops = [np.s_[0:self.N, 0:self.N, :]] # 1st crop contains the whole image
 
         for i in range(self.n_cascades):
-            self.crops.append(select_middle(self.N // 3**i)) # selects thw middle 1/3 quandrant of the image
+            self.crops.append(select_middle(self.N // 3**i))
             dx_ = self.dx * 3**i # every next cascade zooms out frequencies by 3 to capture more low frequencies
             self.fx[...,i], self.fy[...,i], self.f[...,i], self.df[...,i] = self.freq_array(self.N, dx_) # [1/m]
         _ = self.crops.pop(-1)
@@ -170,42 +173,6 @@ class CascadedPhaseGenerator:
         return phase_batch
 
 
-    def zoomX3(self, x, iters=0, interp_order=3):
-        """Scales up the resolution of the phase screens stack 'x' by a factor of 3."""	
-        if iters > 0:
-            zoom_factor = (3**iters, 3**iters, 1)
-            return zoom(x, zoom_factor, order=interp_order)
-        else:
-            return x
-
-
-    def zoomX3_FFT(self, x, iters):
-        if iters > 0:
-            factor = 3**iters
-            original_height, original_width, num_screens = x.shape
-            new_height = int(original_height * factor)
-            new_width  = int(original_width  * factor)
-
-            fft_batch = xp.fft.fft2(x, axes=(0, 1))
-            fft_shifted_batch = xp.fft.fftshift(fft_batch, axes=(0, 1))
-
-            padded_fft_batch = xp.zeros((new_height, new_width, num_screens), dtype=xp.complex64)
-            pad_height_start = (new_height - original_height) // 2
-            pad_width_start  = (new_width  - original_width)  // 2
-
-            padded_fft_batch[
-                pad_height_start : pad_height_start + original_height,
-                pad_width_start  : pad_width_start  + original_width,
-            :] = fft_shifted_batch
-
-            ifft_shifted_batch = xp.fft.ifftshift(padded_fft_batch, axes=(0, 1))
-            interpolated_batch = xp.fft.ifft2(ifft_shifted_batch, axes=(0, 1))
-
-            return xp.real(interpolated_batch) * factor**2
-        else:
-            return x
-
-
     def GenerateScreensBatch(self, PSDs, PSD_temporal, wind_speed, wind_direction, boiling_factor):
         N = self.N
         dt = self.dt
@@ -225,6 +192,8 @@ class CascadedPhaseGenerator:
 
         # Generate cascaded phase screens (W x H x N_screens x N_cascades)
         screens_batch = xp.zeros([N, N, num_screens, n_cascades], dtype=self.datafloat)
+        raw_batch = xp.zeros([N, N, num_screens, n_cascades], dtype=self.datafloat)
+        raw_batch_cropped = []
 
         for i in range(n_cascades):
             # Due to zooming out the lower frequencies, the wind speed must to be slowed down
@@ -235,11 +204,20 @@ class CascadedPhaseGenerator:
             PSD_temporal_ = xp.array(PSD_temporal[...,i][..., None], self.datafloat)
             evolution = tip*Vx_ + tilt*Vy_ + self.random_retardation * boiling_factor * PSD_temporal_
             random_phase = xp.exp(2j*xp.pi * (screen_id*evolution + self.init_noise) )
+            buffalo = self.screens_from_PSD_and_phase(PSDs[...,i], random_phase)
+            raw_batch[...,i] =  buffalo.copy()
+            raw_batch_cropped.append( buffalo[self.crops[i]] )
+
+            screens_batch[...,i] = self.interpolator.zoom_FFT( buffalo[self.crops[i]], i )
+            # screens_batch[...,i] = self.interpolator.zoom_interp( buffalo[self.crops[i]], i )
             
-            screens_batch[...,i] = self.zoomX3( self.screens_from_PSD_and_phase(PSDs[...,i], random_phase)[self.crops[i]], i )
-            # screens_batch[...,i] = self.zoomX3_FFT( self.screens_from_PSD_and_phase(PSDs[...,i], random_phase)[self.crops[i]], i )
-            
-        screens_batch[...,-1] -= screens_batch[...,-1].mean(axis=(0,1), keepdims=True) # remove piston again
+        screens_batch[...,-1] -= screens_batch[...,-1].mean(axis=(0,1), keepdims=True) # remove piston again, just in case
+        raw_batch    [...,-1] -= raw_batch    [...,-1].mean(axis=(0,1), keepdims=True) # remove piston again, just in case
+        
+        self.buffa = screens_batch.copy()
+        self.buffa_raw = raw_batch.copy()
+        self.buffa_raw_cropped = raw_batch_cropped
+        
         screens_batch = screens_batch.sum(axis=-1) # sum all cascades to W x H x N_screens
 
         if GPU_flag:

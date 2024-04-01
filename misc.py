@@ -86,12 +86,6 @@ def radial_profile(data, center):
     radialprofile = tbin / nr
     return radialprofile
    
-
-def radialize_PSD(PSD, grid, label=''):
-    PSD_profile = radial_profile(PSD, (PSD.shape[0]//2, PSD.shape[1]//2))[:PSD.shape[1]//2]
-    grid_profile = grid[grid.shape[0]//2, grid.shape[1]//2:-1]
-    plt.plot(grid_profile, PSD_profile, label=label)
-
  
 def PSD_to_phase(phase_batch): 
     N_, _, num_screens = phase_batch.shape
