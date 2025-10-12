@@ -2,6 +2,8 @@ import json
 import numpy as np
 import warnings
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+from skimage.transform import rescale
 
 
 with open('settings.json') as f:
@@ -28,8 +30,11 @@ else:
     xp = np
     from scipy.ndimage import zoom
 
+import matplotlib.pyplot as plt
+from PIL import Image
 
-def SaveVideo(frames_batch):
+
+def SaveVideo(frames_batch, output_video_path='output/screens.mp4'):
     from matplotlib import cm
     from skimage.transform import rescale
     from tqdm import tqdm
@@ -45,7 +50,6 @@ def SaveVideo(frames_batch):
     scale_factor = 2
     normalizer = xp.abs(frames_batch).max()
 
-    output_video_path = 'output/screens.mp4'
     height, width, layers = frames_batch.shape
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec used to compress the frames
@@ -63,6 +67,43 @@ def SaveVideo(frames_batch):
 
     video.release()
     
+
+def SaveGIF(array, duration=1e3, scale=1, path='test.gif', colormap=plt.cm.viridis):
+    # If the input is an array or a tensor, we need to convert it to a list of PIL images first
+    if type(array) == np.ndarray:
+        gif_anim = []
+        array_ = array.copy()
+
+        if array.shape[0] != array.shape[1] and array.shape[1] == array.shape[2]:
+            array_ = array_.transpose(1,2,0)
+
+        for layer in np.rollaxis(array_, 2):
+            buf = layer/layer.max()
+            if scale != 1.0:
+                buf = rescale(buf, scale, order=0)
+            gif_anim.append( Image.fromarray(np.uint8(colormap(buf)*255)) )
+    else:
+        # In this case, we can directly save the list of PIL images
+        gif_anim = array
+
+    # gif_anim[0].save(path, save_all=True, append_images=gif_anim[1:], optimize=False, quality=100, duration=duration, loop=0)
+    gif_anim[0].save(path, save_all=True, append_images=gif_anim[1:], optimize=False, compress_level=0, duration=duration, loop=0)
+
+
+def SaveGIF_RGB(images_stack, duration=1e3, downscale=4, path='test.gif'):
+    gif_anim = []
+    
+    def remove_transparency(img, bg_colour=(255, 255, 255)):
+        alpha = img.convert('RGBA').split()[-1]
+        bg = Image.new("RGBA", img.size, bg_colour + (255,))
+        bg.paste(img, mask=alpha)
+        return bg
+    
+    for layer in tqdm(images_stack):
+        im = Image.fromarray(np.uint8(layer*255))
+        gif_anim.append( remove_transparency(im) )
+        gif_anim[0].save(path, save_all=True, append_images=gif_anim[1:], optimize=True, duration=duration, loop=0)
+
     
 def mask_circle(N, r, center=(0,0), centered=True):
     """Generates a circular mask of radius r in a grid of size N."""

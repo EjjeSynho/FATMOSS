@@ -111,8 +111,11 @@ class CascadedPhaseGenerator:
         PSD_temporal = np.zeros(arrays_shape, dtype=self.datafloat_cpu) # Describes the temporal evolution of the PSD
         PSDs = np.zeros(arrays_shape, dtype=self.datafloat_cpu) # Contains spatial frequencies
 
+        # f_max = self.f.max() / 3
+
         for i in range(self.n_cascades):
             PSDs[...,i] = self.vonKarmanPSD(self.f[...,i], r0, L0) * self.df[i]**2 * rad2nm**2 # PSD spatial [nm^2/m^2]
+            # PSDs[...,i][self.f[...,i] < f_max] *= 1e-2
             PSD_temporal[...,i] = self.boiler(self.f[...,i]) # PSD temporal [??/??]
 
         # Masks are used to supress the spatial frequencies that belong to other cascades
@@ -173,7 +176,7 @@ class CascadedPhaseGenerator:
         return phase_batch
 
 
-    def GenerateScreensBatch(self, PSDs, PSD_temporal, wind_speed, wind_direction, boiling_factor):
+    def GenerateScreensBatch(self, PSD_spatial, PSD_temporal, wind_speed, wind_direction, boiling_factor):
         N = self.N
         dt = self.dt
         num_screens = self.num_screens
@@ -194,6 +197,7 @@ class CascadedPhaseGenerator:
         screens_batch = xp.zeros([N, N, num_screens, n_cascades], dtype=self.datafloat)
         raw_batch = xp.zeros([N, N, num_screens, n_cascades], dtype=self.datafloat)
         raw_batch_cropped = []
+        phase_batch = []
 
         for i in range(n_cascades):
             # Due to zooming out the lower frequencies, the wind speed must to be slowed down
@@ -203,13 +207,17 @@ class CascadedPhaseGenerator:
 
             PSD_temporal_ = xp.array(PSD_temporal[...,i][..., None], self.datafloat)
             evolution = tip*Vx_ + tilt*Vy_ + self.random_retardation * boiling_factor * PSD_temporal_
-            random_phase = xp.exp(2j*xp.pi * (screen_id*evolution + self.init_noise) )
-            buffalo = self.screens_from_PSD_and_phase(PSDs[...,i], random_phase)
+            phi = screen_id*evolution + self.init_noise
+            random_phase  = xp.exp(2j*xp.pi * phi)
+            
+            buffalo = self.screens_from_PSD_and_phase(PSD_spatial[...,i], random_phase)
             raw_batch[...,i] =  buffalo.copy()
             raw_batch_cropped.append( buffalo[self.crops[i]] )
 
             screens_batch[...,i] = self.interpolator.zoom_FFT( buffalo[self.crops[i]], i )
             # screens_batch[...,i] = self.interpolator.zoom_interp( buffalo[self.crops[i]], i )
+            
+            phase_batch.append( random_phase.copy() )
             
         screens_batch[...,-1] -= screens_batch[...,-1].mean(axis=(0,1), keepdims=True) # remove piston again, just in case
         raw_batch    [...,-1] -= raw_batch    [...,-1].mean(axis=(0,1), keepdims=True) # remove piston again, just in case
@@ -217,6 +225,8 @@ class CascadedPhaseGenerator:
         self.buffa = screens_batch.copy()
         self.buffa_raw = raw_batch.copy()
         self.buffa_raw_cropped = raw_batch_cropped
+        self.buffa_interp = screens_batch.copy()
+        self.phase_buf = phase_batch
         
         screens_batch = screens_batch.sum(axis=-1) # sum all cascades to W x H x N_screens
 

@@ -99,7 +99,7 @@ class Interpolator:
         return s
 
 
-    def __periodic_smooth_decomp_batch(self, I):
+    def periodic_smooth_decomp_batch(self, I):
         '''Performs periodic-smooth image decomposition on a batch of images using FFT plans.
 
         Parameters
@@ -152,7 +152,7 @@ class Interpolator:
         new_height = int(original_height * factor)
         new_width  = int(original_width  * factor)
 
-        x_p, x_s = self.__periodic_smooth_decomp_batch(x)
+        x_p, x_s = self.periodic_smooth_decomp_batch(x)
 
         # plan = get_plan(original_width, x_p.dtype)
         # fft_shifted_batch = gfft.fftshift(gfft.fft2(x_p, axes=(0, 1), plan=plan), axes=(0, 1))
