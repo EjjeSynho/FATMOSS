@@ -10,6 +10,8 @@ from phase_generator import *
 from atmospheric_layer import *
 from misc import *
 
+PrintGPUInfo()
+
 # Parameters
 D  = 8.0  # Size of the phase screen [m]
 # D  = 39.0  # Size of the phase screen [m]
@@ -100,7 +102,6 @@ screen_generator.deallocate_gpu_memory(full_cleanup=True)
 #%%
 SaveVideo(screens_sequence, f'phase_screens_{scenario}.mp4')
 
-
 #%%
 for i in range(0,100,10):
     # plt.imshow(screens_sequence[...,i].get())
@@ -116,6 +117,7 @@ from PIL import Image
 from scipy.ndimage import zoom as zoomer
 from interpolate import Interpolator
 import os
+import cupy as cp
 
 save_folda = "C:/Users/akuznets/Desktop/poster_buf/"
 interp = Interpolator()
@@ -163,7 +165,6 @@ to_cm_image( zoomer(D_s, zoom_factor, order=0) ).save(save_folda + "smooth.png")
 to_cm_image( zoomer(D_p, zoom_factor, order=3) ).save(save_folda + "periodic_interp.png")
 to_cm_image( zoomer(D_s, zoom_factor, order=3) ).save(save_folda + "smooth_interp.png")
 
-
 phases   = screen_generator.phase_buf[-2]
 phases_R = to_gray_image(phases.real.get())
 phases_G = to_gray_image(phases.imag.get())
@@ -194,31 +195,6 @@ if not os.path.exists(save_folda + 'PSD_and_phase.gif'):
     SaveGIF_RGB(phases_stack_PSD, duration=1e0, downscale=1, path=save_folda+'PSD_and_phase.gif')
 
 SaveGIF_RGB(phases_stack_PSD, duration=1e0, downscale=1, path=save_folda+'PSD_and_phase.gif')  
-    
-#%%
-from misc import PSD_to_phase
-
-colors_ = ['tab:orange', 'tab:green', 'tab:purple', 'tab:pink', 'tab:olive', 'tab:cyan']
-colors_ = [ np.array(plt.get_cmap('tab10')(i)[:-1]) for i in range(len(colors_)) ]
-
-N = PSD_sample.shape[0]
-N_ = N // 3
-
-mask_basis = mask_circle(N, N/2, centered=True )
-mask_outer = mask_circle(N, N_/2, centered=True )
-mask_inner = mask_circle(N, N_/6, centered=True )
-
-mask_2 = mask_outer - mask_inner
-mask_3 = mask_basis - mask_outer
-mask_1 = mask_inner
-
-mask_1 = mask_1[..., None] * colors_[0][None, None, :]
-mask_2 = mask_2[..., None] * colors_[1][None, None, :]
-mask_3 = mask_3[..., None] * colors_[2][None, None, :]
-
-PSD_sample_RGB = PSD_sample[...,None] * mask_1 + PSD_sample[...,None] * mask_2 + PSD_sample[...,None] * mask_3
-
-plt.imsave(save_folda + "PSD_sample_RGB.png", PSD_sample_RGB**0.65)
 
 #%%
 PSDs_cascade = []
@@ -278,36 +254,6 @@ plt.ylabel(r'PSD $[nm^2 / \hspace{0.5} m^2]$')
 
 plt.savefig(save_folda + "PSD_reconstruction_reconst.pdf", dpi=300)
 
-# %%
-from cupyx.scipy.signal import correlate2d
-
-screens_sequence = cp.asarray(screens_sequence)
-
-corr = correlate2d(screens_sequence[..., 0], screens_sequence[..., 1], mode="full", boundary="fill")
-
-# Plot the correlation result
-plt.imshow(corr.get(), cmap='viridis')
-plt.colorbar()
-
-#%% 
-# Example shapes
-
-# Create two batches (H, W, N)
-A = screens_sequence[..., 100:200]  # First N screens
-B = screens_sequence[..., 101:201]  # Second N screens
-
-# 1) Full cross-correlation maps per image (output (H+H-1, W+W-1, N))
-corr_maps = correlate2d_fft_batched(A, B, return_numpy=True)
-print("corr_maps shape:", corr_maps.shape)
-
-#%%
-corr_ = corr_maps.mean(axis=-1)
-plt.imshow(corr_, cmap='viridis')
-plt.colorbar()
-
-# Empty cupy cache
-cp._default_memory_pool.free_all_blocks()
-cp.get_default_memory_pool().used_bytes()
 
 #%%
 A_ = A[...,::10]

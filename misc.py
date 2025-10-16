@@ -97,6 +97,16 @@ def SaveGIF(array, duration=1e3, scale=1, path='test.gif', colormap=plt.cm.virid
     gif_anim[0].save(path, save_all=True, append_images=gif_anim[1:], optimize=False, compress_level=0, duration=duration, loop=0)
 
 
+def PrintGPUInfo():
+    if GPU_flag:
+        print(f"GPU Device: {cp.cuda.runtime.getDeviceProperties(0)['name'].decode()}")
+        print(f"GPU Memory Total: {cp.cuda.runtime.memGetInfo()[1] / 1024**3:.1f} GB")
+        print(f"GPU Memory Free:  {cp.cuda.runtime.memGetInfo()[0] / 1024**3:.1f} GB")
+        print(f"GPU Memory Used:  {(cp.cuda.runtime.memGetInfo()[1] - cp.cuda.runtime.memGetInfo()[0]) / 1024**3:.1f} GB")
+    else:
+        print("GPU not available or not enabled")
+
+
 def SaveGIF_RGB(images_stack, duration=1e3, downscale=4, path='test.gif'):
     gif_anim = []
     
@@ -111,7 +121,7 @@ def SaveGIF_RGB(images_stack, duration=1e3, downscale=4, path='test.gif'):
         gif_anim.append( remove_transparency(im) )
         gif_anim[0].save(path, save_all=True, append_images=gif_anim[1:], optimize=True, duration=duration, loop=0)
 
-    
+
 def mask_circle(N, r, center=(0,0), centered=True):
     """Generates a circular mask of radius r in a grid of size N."""
     factor = 0.5 * (1-N%2)
