@@ -132,16 +132,16 @@ class Interpolator:
         return p, s_f
 
 
-    def zoom_interp(self, x, iters=0, interp_order=3):
-        """Scales up the resolution of the phase screens stack 'x' by a factor of 3."""	
-        if iters > 0:
-            zoom_factor = (3**iters, 3**iters, 1)
-            return zoom(x, zoom_factor, order=interp_order)
-        else:
-            return x
+    # def zoom_interp(self, x, iters=0, interp_order=3):
+    #     """Scales up the resolution of the phase screens stack 'x' by a factor of 3."""	
+    #     if iters > 0:
+    #         zoom_factor = (3**iters, 3**iters, 1)
+    #         return zoom(x, zoom_factor, order=interp_order)
+    #     else:
+    #         return x
 
 
-    def zoom_FFT(self, x, iters=0):  
+    def zoom(self, x, iters=0):  
         if iters == 0:
             return x
         

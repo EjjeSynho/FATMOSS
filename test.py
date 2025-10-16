@@ -2,35 +2,73 @@
 %reload_ext autoreload
 %autoreload 2
 
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-import time
 from phase_generator import *
+from atmospheric_layer import *
+from misc import *
 
 # Parameters
 D  = 8.0  # Size of the phase screen [m]
-r0 = 0.1  # Fried parameter [m]
+# D  = 39.0  # Size of the phase screen [m]
+r0 = 0.125 # Fried parameter [m]
 L0 = 25.0 # Outer scale [m]
 
-dx = r0 / 3.0 # Spatial sampling interval [m/pixel], make sure r0 is Nyquist sampled
+dx = r0 / 2 # Spatial sampling interval [m/pixel], make sure r0 is Nyquist sampled
 dt = 0.001 # Time step [s/step]
 
-wind_speed = 40*0 # [m/s]
-wind_direction = 45 # [degree]
-boiling_factor = 1500 # [a.u], need to figure them out
+simulation_scenarios = {
+    'frozen_flow': {
+        'wind_speed': 40,
+        'wind_direction': 90,
+        'boiling_factor': 0
+    },
+    'boiling': {
+        'wind_speed': 0,
+        'wind_direction': 90,
+        'boiling_factor': 1500
+    },
+    'mixed': {
+        'wind_speed': 40,
+        'wind_direction': 90,
+        'boiling_factor': 400
+    },
+}
 
-screen_generator = CascadedPhaseGenerator(D, dx, dt, batch_size=config['batch_size'], n_cascades=3)
-screen_generator.AddLayer(1.0, r0, L0, wind_speed, wind_direction, boiling_factor)
-# screen_generator.AddLayer(0.5, r0/2., L0, wind_speed*2, wind_direction*4, boiling_factor)
+# scenario = 'mixed'
+# scenario = 'boiling'
+scenario = 'frozen_flow'
+
+wind_speed     = simulation_scenarios[scenario]['wind_speed']     # [m/s]
+wind_direction = simulation_scenarios[scenario]['wind_direction'] # [degree]
+boiling_factor = simulation_scenarios[scenario]['boiling_factor'] # [a.u], need to figure them out
+
+#%%
+screen_generator = PhaseScreensGenerator(D, dx, dt, batch_size=100, n_cascades=3, seed=142)
+layer1 = Layer(1.0, 0, wind_speed, wind_direction, boiling_factor, lambda f: vonKarmanPSD(f, r0, L0), lambda f: SimpleBoiling(f, screen_generator.dx))
+# layer2 = Layer(0.2, 0, wind_speed, wind_direction+90, boiling_factor, lambda f: vonKarmanPSD(f, r0, L0), lambda f: SimpleBoiling(f, screen_generator.dx))
+# layer3 = Layer(0.2, 0, wind_speed, wind_direction+120, boiling_factor, lambda f: vonKarmanPSD(f, r0, L0), lambda f: SimpleBoiling(f, screen_generator.dx))
+# layer4 = Layer(0.2, 0, wind_speed, wind_direction-30, boiling_factor, lambda f: vonKarmanPSD(f, r0, L0), lambda f: SimpleBoiling(f, screen_generator.dx))
+# layer5 = Layer(0.2, 0, wind_speed, wind_direction-90, boiling_factor, lambda f: vonKarmanPSD(f, r0, L0), lambda f: SimpleBoiling(f, screen_generator.dx))
+screen_generator.AddLayer(layer1)
+# screen_generator.AddLayer(layer2)
+# screen_generator.AddLayer(layer3)
+# screen_generator.AddLayer(layer4)
+# screen_generator.AddLayer(layer5)
+
+
+print(screen_generator)
+
 
 #%%
 if GPU_flag:
     start = cp.cuda.Event()
     end   = cp.cuda.Event()
 
-total_time = 0
-screens_cascade = []
+    total_time = 0
+screens_sequence = []
 
 iters = 1000
 
@@ -40,7 +78,7 @@ for i in tqdm(range(iters)):
     else:
         start = time.time()
         
-    screens_cascade.append(screen_generator.GetScreenByTimestep(i))
+    screens_sequence.append(screen_generator.GetScreenByTimestep(i))
     
     if GPU_flag:
         end.record()
@@ -50,19 +88,26 @@ for i in tqdm(range(iters)):
         end = time.time()
         total_time += (end-start) * 1000
 
-screens_cascade = xp.dstack(screens_cascade)
+screens_sequence = xp.dstack(screens_sequence).get()
 
-print(f"Total elapsed time: {np.round(total_time/1e3,1)} [s]")
-print(f"Time per screen: {np.round(total_time/iters).astype(xp.uint32)} [ms]")
+print(f"Total elapsed time: {total_time/1e3:.1f} [s]")
+print(f"Time per screen: {total_time/iters:.1f} [ms]")
+print(f"Time per screen per layer: {total_time/(iters*screen_generator.n_layers):.1f} [ms]")
+print(f"Time per screen per layer per cascade: {total_time/(iters*screen_generator.n_layers*screen_generator.n_cascades):.1f} [ms]")
+
+screen_generator.deallocate_gpu_memory(full_cleanup=True)
 
 #%%
-
-SaveVideo(screens_cascade)
+SaveVideo(screens_sequence, f'phase_screens_{scenario}.mp4')
 
 
 #%%
-
-screens_cascade.shape
+for i in range(0,100,10):
+    # plt.imshow(screens_sequence[...,i].get())
+    plt.imshow(screens_sequence[...,i])
+    plt.axis('off')
+    plt.tight_layout()
+    plt.savefig(f"C:/Users/akuznets/Desktop/poster_buf/phase_screen_{i}_CL.png", dpi=300)
 
 
 #%%
@@ -72,18 +117,18 @@ from scipy.ndimage import zoom as zoomer
 from interpolate import Interpolator
 import os
 
-save_folda = "C:/Users/akuznets/Desktop/presa_buf/"
+save_folda = "C:/Users/akuznets/Desktop/poster_buf/"
 interp = Interpolator()
 
-A = screen_generator.buffa_raw[...,0,:].get()
-B = [ x[...,0].get() for x in screen_generator.buffa_raw_cropped ]
-C = screen_generator.buffa_interp[...,0,:].get()
-D = screen_generator.buffa_raw_cropped[-1]
+A = screen_generator.raw_batch[...,0,:].get()
+B = [ x[...,0].get() for x in screen_generator.raw_batch_cropped ]
+C = screen_generator.batch_interp[...,0,:].get()
+D = screen_generator.raw_batch_cropped[-1]
 
 D_p, D_s = interp.periodic_smooth_decomp_batch(D)
 D_s, D_p = D_s[...,0].get(), D_p[...,0].get()
 
-result = np.dstack([screen_generator.buffa_interp[...,0,i].get() for i in range(screen_generator.n_cascades)]).sum(axis=-1)
+result = np.dstack([screen_generator.batch_interp[...,0,i].get() for i in range(screen_generator.n_cascades)]).sum(axis=-1)
 
 def to_gray_image(x):
     x = (x - x.min()) / (x.max() - x.min())
@@ -176,16 +221,11 @@ PSD_sample_RGB = PSD_sample[...,None] * mask_1 + PSD_sample[...,None] * mask_2 +
 plt.imsave(save_folda + "PSD_sample_RGB.png", PSD_sample_RGB**0.65)
 
 #%%
-
-np.save(save_folda + "screens_closed_loop.npy", screens_cascade.get())
-
-
-#%%
 PSDs_cascade = []
 rad2nm = 500.0 / 2.0 / np.pi # [nm/rad]
 
 for i in range(screen_generator.n_cascades):
-    phase_scr = screen_generator.buffa_raw[...,i]
+    phase_scr = screen_generator.raw_batch[...,i]
     PSD_ = PSD_to_phase(phase_scr)
     PSD_ = PSD_ * rad2nm**2 * screen_generator.df[...,i]**2 * 9**(2*(i-1))
     PSD_[PSD_ < xp.median(PSD_)/4] = 1e-12 # Just for more beautiful display
@@ -201,7 +241,7 @@ rad2nm = 500.0 / 2.0 / np.pi # [nm/rad]
 
 PSD_ultimate = screen_generator.vonKarmanPSD(f_over, r0, L0) * df_over**2 * rad2nm**2 * oversampling_factor**2
 
-PSD_out = PSD_to_phase(screens_cascade)
+PSD_out = PSD_to_phase(screens_sequence)
 
 if GPU_flag:
     PSD_out = cp.asnumpy(PSD_out)
@@ -236,6 +276,49 @@ plt.xlabel('Spatial frequency [1/m]')
 plt.ylabel(r'PSD $[nm^2 / \hspace{0.5} m^2]$')
 # plt.show()
 
-plt.savefig(save_folda + "PSD_reconstruction_reconst.png", dpi=300)
+plt.savefig(save_folda + "PSD_reconstruction_reconst.pdf", dpi=300)
 
 # %%
+from cupyx.scipy.signal import correlate2d
+
+screens_sequence = cp.asarray(screens_sequence)
+
+corr = correlate2d(screens_sequence[..., 0], screens_sequence[..., 1], mode="full", boundary="fill")
+
+# Plot the correlation result
+plt.imshow(corr.get(), cmap='viridis')
+plt.colorbar()
+
+#%% 
+# Example shapes
+
+# Create two batches (H, W, N)
+A = screens_sequence[..., 100:200]  # First N screens
+B = screens_sequence[..., 101:201]  # Second N screens
+
+# 1) Full cross-correlation maps per image (output (H+H-1, W+W-1, N))
+corr_maps = correlate2d_fft_batched(A, B, return_numpy=True)
+print("corr_maps shape:", corr_maps.shape)
+
+#%%
+corr_ = corr_maps.mean(axis=-1)
+plt.imshow(corr_, cmap='viridis')
+plt.colorbar()
+
+# Empty cupy cache
+cp._default_memory_pool.free_all_blocks()
+cp.get_default_memory_pool().used_bytes()
+
+#%%
+A_ = A[...,::10]
+
+vmin=A_.min()
+vmax=A_.max()
+
+# Print as horizontal subplots
+fig, axs = plt.subplots(1, A_.shape[-1], figsize=(20, 5))
+for i in range(A_.shape[-1]):
+    axs[i].imshow(A_[...,i].get(), cmap='inferno', vmin=vmin, vmax=vmax)
+    axs[i].axis('off')
+plt.savefig(f"C:/Users/akuznets/Desktop/poster_buf/phase_screens_line_{scenario}.pdf", dpi=300)
+

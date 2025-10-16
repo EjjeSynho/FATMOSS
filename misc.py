@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 
 
-def SaveVideo(frames_batch, output_video_path='output/screens.mp4'):
+def SaveVideo(frames_batch, output_video_path):
     from matplotlib import cm
     from skimage.transform import rescale
     from tqdm import tqdm
@@ -48,7 +48,14 @@ def SaveVideo(frames_batch, output_video_path='output/screens.mp4'):
 
     colormap = cm.viridis
     scale_factor = 2
-    normalizer = xp.abs(frames_batch).max()
+    
+    # Automatically detect if array is CuPy or NumPy
+    if GPU_flag and hasattr(frames_batch, '__array_module__') and frames_batch.__array_module__.__name__ == 'cupy':
+        normalizer = cp.abs(frames_batch).max()
+        is_cupy = True
+    else:
+        normalizer = np.abs(frames_batch).max()
+        is_cupy = False
 
     height, width, layers = frames_batch.shape
 
@@ -58,7 +65,7 @@ def SaveVideo(frames_batch, output_video_path='output/screens.mp4'):
     print('Writing video...')
     for i in tqdm(range(layers)):
         buf = (frames_batch[..., i] + normalizer) / 2 / normalizer
-        if GPU_flag:
+        if is_cupy:
             buf = cp.asnumpy(buf)
         buf = rescale(buf, scale_factor, order=1)
         frame = (colormap(buf) * 255).astype(np.uint8)
@@ -155,101 +162,3 @@ def PSD_to_phase(phase_batch):
     temp_mean = FFT_batch.mean(axis=(0,1), keepdims=True)
     return 2 * xp.mean( xp.abs(FFT_batch-temp_mean)**2, axis=2 )
 
-
-'''
-def PSD_to_phase_advanced(phase_batch):
-    N_, _, N_screens = phase_batch.shape
-    batch_size = 32
-    pad_size   = N_//2+N_%2
-    N_batches  = N_screens // batch_size
-
-    hanning_window = cp.array( (np.hanning(N_).reshape(-1, 1) * np.hanning(N_))[..., None], dtype=datafloat ) * 1.6322**2
-
-    temp_mean = cp.zeros([pad_size*2+N_, pad_size*2+N_], dtype=datafloat)
-    FFT_batch = cp.zeros([pad_size*2+N_, pad_size*2+N_, batch_size], dtype=datacomplex)
-    variance_batches = cp.zeros([pad_size*2+N_, pad_size*2+N_], dtype=datafloat)
-
-    plan = get_fft_plan(FFT_batch, axes=(0,1), value_type='C2C') # for batched, C2C, 2D transform
-
-    pad_dims = ( (pad_size, pad_size), (pad_size,pad_size), (0, 0) )
-
-    for i in range(N_batches):
-        buf = cp.pad( phase_batch[..., i*batch_size:(i+1)*batch_size]*hanning_window, pad_dims, 'constant', constant_values=(0,0))
-        FFT_batch = gfft.fftshift(
-            gfft.fft2(gfft.fftshift(buf, axes=(0,1)), axes=(0,1), plan=plan) / N_**2, axes=(0,1)        
-        )
-        temp_mean = FFT_batch.mean(axis=(0,1), keepdims=True)
-        variance_batches += 2 * cp.mean( cp.abs(FFT_batch-temp_mean)**2, axis=2 )
-        variance_batches = variance_batches / N_batches
-
-    return cupyx.scipy.ndimage.zoom(variance_batches, N_/(pad_size*2+N_), order=3)
-'''
-
-
-
-
-'''
-N_new = screen_generator.N
-_,_,f_0, df_0 = screen_generator.freq_array(N_new, dx=r0/3.0)
-
-rad2nm = 500.0 / 2.0 / np.pi # [nm/rad]
-
-stats = []
-
-masko = mask_circle(N_new, N_new//8, centered=True)
-PSD_testo = screen_generator.vonKarmanPSD(f_0, r0, L0) * df_0**2 * rad2nm**2 * (1-masko)
-select_middle = lambda N: np.s_[N//2-N//6:N//2+N//6+N%2, N//2-N//6:N//2+N//6+N%2]
-croppah = select_middle(N_new//3)
-
-for i in tqdm(range(200)):
-    testo = screen_generator.generate_phase_screen(PSD_testo, N_new)
-    stats.append(testo[croppah])
-
-stats = np.dstack(stats)
-
-# plt.imshow(testo)
-
-
-phase_screens_batch = cp.array(stats, dtype=cp.float32)
-# phase_screens_batch = stats
-
-def zoomax3(phase_screens_batch, iters):
-    if iters > 0:
-        factor = 3**iters
-        original_height, original_width, num_screens = phase_screens_batch.shape
-        new_height = int(original_height * factor)
-        new_width  = int(original_width  * factor)
-
-        fft_batch = xp.fft.fft2(phase_screens_batch, axes=(0, 1))
-        fft_shifted_batch = xp.fft.fftshift(fft_batch, axes=(0, 1))
-
-        padded_fft_batch = xp.zeros((new_height, new_width, num_screens), dtype=xp.complex64)
-        pad_height_start = (new_height - original_height) // 2
-        pad_width_start  = (new_width  - original_width)  // 2
-
-        padded_fft_batch[
-            pad_height_start : pad_height_start + original_height,
-            pad_width_start  : pad_width_start  + original_width,
-        :] = fft_shifted_batch
-
-        ifft_shifted_batch = xp.fft.ifftshift(padded_fft_batch, axes=(0, 1))
-        interpolated_batch = xp.fft.ifft2(ifft_shifted_batch, axes=(0, 1))
-
-        return xp.real(interpolated_batch) * factor**2
-    else:
-        return phase_screens_batch
-
-resulto = zoomax3(phase_screens_batch, 2)
-resulto -= resulto.mean(axis=(0,1), keepdims=True)
-# resulto = cp.array(resulto, dtype=cp.float32)
-
-plt.imshow(testo)
-plt.show()
-plt.imshow(resulto[...,0].get())
-plt.show()
-
-PSDec = PSD_to_phase(resulto)
-
-
-plt.imshow(np.log(PSDec.get()))
-'''
