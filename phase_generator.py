@@ -136,13 +136,36 @@ class PhaseScreensGenerator:
                     del self.screens_all_layers
                 self.screens_all_layers = None
             
-            
+            # Clean up debug buffers
             if hasattr(self, 'phase_buf'):
                 for item in self.phase_buf:
                     if hasattr(item, 'device'):
                         del item
                 delattr(self, 'phase_buf')
-        
+            
+            if hasattr(self, 'raw_batch') and hasattr(self.raw_batch, 'device'):
+                del self.raw_batch
+                self.raw_batch = None
+                
+            if hasattr(self, 'batch_interp') and hasattr(self.batch_interp, 'device'):
+                del self.batch_interp
+                self.batch_interp = None
+                
+            if hasattr(self, 'buffa') and hasattr(self.buffa, 'device'):
+                del self.buffa
+                self.buffa = None
+            
+            # Clean up atmospheric layers PSD data
+            for layer in self.layers:
+                if hasattr(layer, 'PSD_spatial') and layer.PSD_spatial is not None:
+                    if hasattr(layer.PSD_spatial, 'device'):
+                        del layer.PSD_spatial
+                    layer.PSD_spatial = None
+                
+                if hasattr(layer, 'PSD_temporal') and layer.PSD_temporal is not None:
+                    if hasattr(layer.PSD_temporal, 'device'):
+                        del layer.PSD_temporal
+                    layer.PSD_temporal = None
             
             if full_cleanup:
                 # Clean up core arrays (use with caution - will require regeneration)
@@ -153,6 +176,14 @@ class PhaseScreensGenerator:
                 if hasattr(self, 'random_retardation') and hasattr(self.random_retardation, 'device'):
                     del self.random_retardation
                     self.random_retardation = None
+                
+                if hasattr(self, 'tip') and hasattr(self.tip, 'device'):
+                    del self.tip
+                    self.tip = None
+                
+                if hasattr(self, 'tilt') and hasattr(self.tilt, 'device'):
+                    del self.tilt
+                    self.tilt = None
             
             # Force garbage collection and memory pool cleanup
             if hasattr(self, 'mempool'):
@@ -265,10 +296,83 @@ class PhaseScreensGenerator:
 
 
     def AddLayer(self, layer: Layer):
+        """
+        Add an atmospheric layer to the generator.
+        
+        Parameters:
+        -----------
+        layer : Layer
+            Atmospheric layer object with turbulence parameters
+        """
         # Generate PSDs for the layer
         layer.PSD_spatial, layer.PSD_temporal = self.GeneratePSDCascade(layer.PSD_spatial_func, layer.PSD_temporal_func)
         self.layers.append(layer)
         self.n_layers = len(self.layers)
+        
+        if self.debug:
+            print(f"Added layer {self.n_layers}: weight={layer.weight:.3f}, "
+                  f"wind_speed={layer.wind_speed:.1f} m/s, "
+                  f"wind_direction={layer.wind_direction:.1f}°")
+
+    
+    def clear_layers(self):
+        """
+        Remove all atmospheric layers and clean up their GPU memory.
+        """
+        if GPU_flag:
+            # Clean up GPU memory from layers
+            for layer in self.layers:
+                if hasattr(layer, 'PSD_spatial') and layer.PSD_spatial is not None:
+                    if hasattr(layer.PSD_spatial, 'device'):
+                        del layer.PSD_spatial
+                    layer.PSD_spatial = None
+                
+                if hasattr(layer, 'PSD_temporal') and layer.PSD_temporal is not None:
+                    if hasattr(layer.PSD_temporal, 'device'):
+                        del layer.PSD_temporal  
+                    layer.PSD_temporal = None
+        
+        self.layers = []
+        self.n_layers = 0
+        self.screens_all_layers = None
+        
+        if self.debug:
+            print("All atmospheric layers cleared.")
+    
+    
+    def remove_layer(self, index: int):
+        """
+        Remove a specific atmospheric layer by index.
+        
+        Parameters:
+        -----------
+        index : int
+            Index of the layer to remove (0-based)
+        """
+        if 0 <= index < len(self.layers):
+            layer = self.layers[index]
+            
+            # Clean up GPU memory for this layer
+            if GPU_flag:
+                if hasattr(layer, 'PSD_spatial') and layer.PSD_spatial is not None:
+                    if hasattr(layer.PSD_spatial, 'device'):
+                        del layer.PSD_spatial
+                    layer.PSD_spatial = None
+                
+                if hasattr(layer, 'PSD_temporal') and layer.PSD_temporal is not None:
+                    if hasattr(layer.PSD_temporal, 'device'):
+                        del layer.PSD_temporal
+                    layer.PSD_temporal = None
+            
+            # Remove from list
+            self.layers.pop(index)
+            self.n_layers = len(self.layers)
+            self.screens_all_layers = None  # Force regeneration
+            
+            if self.debug:
+                print(f"Removed layer {index + 1}. {self.n_layers} layers remaining.")
+        else:
+            raise IndexError(f"Layer index {index} out of range. Available layers: 0-{len(self.layers)-1}")
 
 
     def GenerateScreensBatch(self, PSD_spatial, PSD_temporal, wind_speed, wind_direction, boiling_factor):
@@ -298,20 +402,20 @@ class PhaseScreensGenerator:
             phase_buffer = self.screens_from_PSD_and_phase(PSD_spatial[...,i], random_complex_phase)
         
             screens_batch[...,i] = self.interpolator.zoom(phase_buffer[self.crops[i]], i)
-            phase_batch.append(random_complex_phase) #.copy() )
+            phase_batch.append(random_complex_phase)
 
             if self.debug:
-                raw_batch[...,i] =  phase_buffer.copy()
+                raw_batch[...,i] = phase_buffer.copy()
                 raw_batch_cropped.append( phase_buffer[self.crops[i]] )
             
         screens_batch[...,-1] -= screens_batch[...,-1].mean(axis=(0,1), keepdims=True) # remove piston, just in case
 
         if self.debug:        
             raw_batch[...,-1] -= raw_batch[...,-1].mean(axis=(0,1), keepdims=True) # remove piston again
-            self.buffa = screens_batch#.copy()
-            self.raw_batch = raw_batch#.copy()
+            self.buffa = screens_batch
+            self.raw_batch = raw_batch
             self.raw_batch_cropped = raw_batch_cropped
-            self.batch_interp = screens_batch#.copy()
+            self.batch_interp = screens_batch
             self.phase_buf = phase_batch
         
         screens_batch = screens_batch.sum(axis=-1) # sum all cascades to W x H x N_screens
@@ -334,6 +438,11 @@ class PhaseScreensGenerator:
 
 
     def GetScreenByTimestep(self, id):
+        '''
+        Get a single phase screen by its global timestep ID.
+        Screens are simulated in batches. As soon as the current batch is exhausted,
+        the next batch is generated automatically.
+        '''
         batch_id  = id // self.batch_size
         screen_id = id % self.batch_size
         batch = self.UpdateScreensBatch(batch_id)
@@ -341,11 +450,60 @@ class PhaseScreensGenerator:
         return batch[..., screen_id]
     
     
-    def reset(self):
+    def reset(self, regenerate_layers=True):
+        """
+        Reset the phase screen generator to initial state.
+        
+        Parameters:
+        -----------
+        regenerate_layers : bool
+            If True, regenerate PSD data for all layers after cleanup.
+            If False, layers will need to be re-added manually.
+        """
         self.current_batch_id = 0
         self.screens_all_layers = None
-        self.reset_random_state(new_seed=self.seed)
+        
+        # Store layer configurations before cleanup
+        layer_configs = []
+        if regenerate_layers and self.layers:
+            for layer in self.layers:
+                layer_configs.append({
+                    'weight': layer.weight,
+                    'altitude': layer.altitude,
+                    'wind_speed': layer.wind_speed,
+                    'wind_direction': layer.wind_direction,
+                    'boiling_factor': layer.boiling_factor,
+                    'PSD_spatial_func': layer.PSD_spatial_func,
+                    'PSD_temporal_func': layer.PSD_temporal_func
+                })
+        
+        # Clean up GPU memory including layers
         self.deallocate_gpu_memory(full_cleanup=False)
+        
+        # Reset random state
+        self.reset_random_state(new_seed=self.seed)
+        
+        # Regenerate layers if requested
+        if regenerate_layers and layer_configs:
+            self.layers = []
+            self.n_layers = 0
+            for config in layer_configs:
+                new_layer = Layer(
+                    config['weight'],
+                    config['altitude'], 
+                    config['wind_speed'],
+                    config['wind_direction'],
+                    config['boiling_factor'],
+                    config['PSD_spatial_func'],
+                    config['PSD_temporal_func']
+                )
+                self.AddLayer(new_layer)
+            
+            if self.debug:
+                print(f"Regenerated {len(self.layers)} atmospheric layers after reset.")
+        
+        if self.debug:
+            print("Phase screen generator reset completed.")
     
     
     def GenerateScreens(self, split_layers=False):

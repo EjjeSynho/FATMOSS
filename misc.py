@@ -1,9 +1,13 @@
 import json
-import numpy as np
+import time
 import warnings
+import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 from tqdm import tqdm
 from skimage.transform import rescale
+from IPython.display import HTML
+from typing import Dict, Any, Optional
 
 
 with open('settings.json') as f:
@@ -97,6 +101,87 @@ def SaveGIF(array, duration=1e3, scale=1, path='test.gif', colormap=plt.cm.virid
     gif_anim[0].save(path, save_all=True, append_images=gif_anim[1:], optimize=False, compress_level=0, duration=duration, loop=0)
 
 
+def RenderVideo(   
+    screens_sequence,
+    max_frames=200,
+    interval=50,
+    frame_step=1,
+    start=0,
+    dt=1.0,
+    title=''
+):
+    '''
+    Description:
+        Creates an animated visualization of atmospheric turbulence phase screens.
+
+    Parameters:
+        screens_sequence — 3D NumPy array (H, W, T) containing phase screens over time.
+        max_frames — maximum number of frames to include in the animation (default: 200).
+        interval — delay between frames in milliseconds, controls playback speed (default: 50).
+        frame_step — step size for selecting every N-th frame from the sequence (default: 1).
+        start — starting frame index within the sequence (default: 0).
+        dt — time step between original frames, used for labeling in seconds (default: 1.0).
+        title — plot title.
+
+    Returns:
+        HTML — an embeddable HTML animation object (for Jupyter notebooks).
+    '''
+
+    # Build the list of frame indices we intend to show (start, step)
+    all_indices = np.arange(start, screens_sequence.shape[2], frame_step)
+    frame_indices = all_indices[:max_frames]
+    n_frames = len(frame_indices)
+    
+    if n_frames == 0:
+        raise ValueError("No frames selected: check 'start' and 'frame_step'.")
+
+    # Create figure and axis
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.set_aspect('equal')
+
+    # Initialize the image
+    vmin = np.percentile(screens_sequence, 1)
+    vmax = np.percentile(screens_sequence, 99.999)
+    im = ax.imshow(
+        screens_sequence[:, :, frame_indices[0]],
+        cmap='viridis',
+        animated=True,
+        vmin=vmin,
+        vmax=vmax
+    )
+
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Phase [nm]', rotation=270, labelpad=20)
+
+    # Labels
+    ax.set_xlabel('Pixels')
+    ax.set_ylabel('Pixels')
+
+    if not title == '':
+        title += '\n'
+
+    # Animation function
+    def animate(i):
+        idx = frame_indices[i]
+        im.set_array(screens_sequence[:, :, idx])
+        # i counts shown frames (0..n_frames-1); idx is the original frame number
+        ax.set_title(title +
+            f'Frame {i}/{n_frames-1}  |  Original frame {idx}  (t={idx*dt:.3f}s)',
+            fontsize=14, pad=20
+        )
+        return [im]
+
+    # Create animation
+    ani = animation.FuncAnimation(fig, animate, frames=n_frames,
+                                  interval=interval, blit=True, repeat=True)
+
+    plt.tight_layout()
+    plt.close(fig)  # Prevent static display
+
+    return HTML(ani.to_jshtml())
+
+
 def PrintGPUInfo():
     if GPU_flag:
         print(f"GPU Device: {cp.cuda.runtime.getDeviceProperties(0)['name'].decode()}")
@@ -146,6 +231,10 @@ def radial_profile(data, center):
    
  
 def PSD_to_phase(phase_batch): 
+    # Check if input is numpy
+    if not hasattr(phase_batch, 'device') and GPU_flag:
+        phase_batch = xp.array(phase_batch)
+    
     N_, _, num_screens = phase_batch.shape
     hanning_window = (np.hanning(N_).reshape(-1, 1) * np.hanning(N_))[..., None]
     hanning_window = xp.array(hanning_window, dtype=phase_batch.dtype) * 1.6322**2 # Corrective factor
@@ -172,3 +261,97 @@ def PSD_to_phase(phase_batch):
     temp_mean = FFT_batch.mean(axis=(0,1), keepdims=True)
     return 2 * xp.mean( xp.abs(FFT_batch-temp_mean)**2, axis=2 )
 
+
+
+def BenchmarkScreensGenerator(
+    screen_generator,
+    iters: int,
+    use_tqdm: bool = True,
+    verbose: bool = False
+) -> Dict[str, Any]:
+    """
+    Run screen_generator over `iters` timesteps, stack results into a 3D array,
+    and measure timing on CPU or GPU.
+
+    Parameters
+    ----------
+    screen_generator : object with .GetScreenByTimestep(i) -> 2D array-like
+        Must also provide attributes `n_layers` and `n_cascades` (ints) for stats
+        (defaults to 1 if missing).
+    iters : int
+        Number of timesteps to generate.
+    use_tqdm : bool, default True
+        If True, wraps the loop with tqdm for a progress bar.
+
+    Returns
+    -------
+    result : dict
+        {
+          "screens": np.ndarray (H, W, iters) on host memory,
+          "total_time_ms": float,
+          "time_per_screen_ms": float,
+          "time_per_screen_per_layer_ms": float,
+          "time_per_screen_per_layer_per_cascade_ms": float,
+        }
+    """
+    if xp is None:
+        raise ValueError("Please pass `xp` as numpy or cupy.")
+
+    if GPU_flag and cp is None:
+        raise ValueError("GPU_flag=True requires `cp` (CuPy) to be provided.")
+
+    try:
+        from tqdm import tqdm as _tqdm
+    except Exception:
+        _tqdm = lambda x, **_: x  # fallback no-op
+
+    prog = _tqdm(range(iters)) if use_tqdm else range(iters)
+
+    if GPU_flag:
+        start_evt = cp.cuda.Event()
+        end_evt   = cp.cuda.Event()
+
+    total_time_ms = 0.0
+    screens_list = []
+
+    for i in prog:
+        if GPU_flag:
+            start_evt.record()
+        else:
+            t0 = time.perf_counter()
+
+        screens_list.append(screen_generator.GetScreenByTimestep(i))
+
+        if GPU_flag:
+            end_evt.record()
+            end_evt.synchronize()
+            total_time_ms += cp.cuda.get_elapsed_time(start_evt, end_evt)  # ms
+        else:
+            total_time_ms += (time.perf_counter() - t0) * 1000.0
+
+    # Stack along the third axis to shape (H, W, iters)
+    screens_stack = xp.dstack(screens_list)
+
+    # Ensure host (NumPy) output for downstream tools/animation
+    if hasattr(screens_stack, "get"):
+        screens_host = screens_stack.get()
+    else:
+        screens_host = screens_stack
+
+    n_layers   = getattr(screen_generator, "n_layers", 1) or 1
+    n_cascades = getattr(screen_generator, "n_cascades", 1) or 1
+
+    result = {
+        "screens": screens_host,
+        "total_time_ms": total_time_ms,
+        "time_per_screen_ms": total_time_ms / iters,
+        "time_per_screen_per_layer_ms": total_time_ms / (iters * n_layers),
+        "time_per_screen_per_layer_per_cascade_ms": total_time_ms / (iters * n_layers * n_cascades),
+    }
+    
+    if verbose:
+        print(f"Total elapsed time: {result['total_time_ms']/1e3:.1f} s")
+        print(f"Time per screen: {result['time_per_screen_ms']:.1f} ms")
+        print(f"Per layer: {result['time_per_screen_per_layer_ms']:.1f} ms")
+        print(f"Per layer per cascade: {result['time_per_screen_per_layer_per_cascade_ms']:.1f} ms")
+    return result

@@ -1,0 +1,20 @@
+# Core dependencies
+numpy>=1.20.0
+scipy>=1.7.0
+matplotlib>=3.5.0
+tqdm>=4.60.0
+
+# Image processing
+pillow>=8.0.0
+scikit-image>=0.18.0
+
+# Optional GPU acceleration (install manually if needed)
+# cupy-cuda11x>=10.0.0  # For CUDA 11.x
+# cupy-cuda12x>=12.0.0  # For CUDA 12.x
+
+# For saving videos
+opencv-python>=4.5.0
+
+# Jupyter notebook support (optional)
+jupyter>=1.0.0
+ipykernel>=6.0.0

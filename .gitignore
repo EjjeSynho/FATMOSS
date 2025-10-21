@@ -1,4 +1,3 @@
-*.mp4
 output/
 *.pyc
 __pycache__/
