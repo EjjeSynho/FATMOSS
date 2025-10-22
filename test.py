@@ -21,6 +21,49 @@ L0 = 25.0 # Outer scale [m]
 dx = r0 / 2 # Spatial sampling interval [m/pixel], make sure r0 is Nyquist sampled
 dt = 0.001 # Time step [s/step]
 
+batch_size=100
+
+#%%
+screen_generator = PhaseScreensGenerator(D, dx, dt, batch_size=batch_size, n_cascades=3, seed=142, dynamic_PSD=True)
+
+# Note that t is timestamps here (for simplicity)
+r0_f = lambda t: 0.1 + 0.1 / 100 * t
+L0_f = lambda t: 25  + 1 / 100 * t
+c_f  = lambda t: t*0 + dx # Boiling PSD constant
+
+screen_generator.AddLayer(Layer(1.0, 0, 0, 0, 0, lambda f,t: vonKarmanPSDDynamic(f, t, r0_f, L0_f), lambda f,t: SimpleBoilingDynamic(f, t, c_f)))
+
+#%%
+screens_sequence = []
+N_screens = 1000
+for i in tqdm(range(N_screens)):
+    screens_sequence.append(screen_generator.GetScreenByTimestep(i))
+screens_sequence = xp.dstack(screens_sequence).get()
+
+
+#%%
+# Initialize a new phase screen generator instance
+screen_generator = PhaseScreensGenerator(D, dx, dt, batch_size=batch_size, n_cascades=3, seed=142)
+
+boiling_factor = 200 # [a.u.]
+
+# Initialize a layer with the boiling enabled
+boiling_layer = Layer(1.0, 0, 20.0, 45, boiling_factor, lambda f: vonKarmanPSD(f, r0, L0), lambda f: SimpleBoiling(f, screen_generator.dx))
+
+screen_generator.AddLayer(boiling_layer)
+
+# Simulate
+results = BenchmarkScreensGenerator(
+    screen_generator,
+    iters=1000,
+    use_tqdm=True,
+    verbose=True
+)
+
+screens_boiling = results["screens"]
+
+
+#%%
 simulation_scenarios = {
     'frozen_flow': {
         'wind_speed': 40,
@@ -102,16 +145,8 @@ screen_generator.deallocate_gpu_memory(full_cleanup=True)
 #%%
 SaveVideo(screens_sequence, f'phase_screens_{scenario}.mp4')
 
-#%%
-for i in range(0,100,10):
-    # plt.imshow(screens_sequence[...,i].get())
-    plt.imshow(screens_sequence[...,i])
-    plt.axis('off')
-    plt.tight_layout()
-    plt.savefig(f"C:/Users/akuznets/Desktop/poster_buf/phase_screen_{i}_CL.png", dpi=300)
 
-
-#%%
+#%% ------------------------------- Wild West below --------------------------------------------
 from misc import SaveGIF_RGB, SaveGIF
 from PIL import Image
 from scipy.ndimage import zoom as zoomer
@@ -119,7 +154,7 @@ from interpolate import Interpolator
 import os
 import cupy as cp
 
-save_folda = "C:/Users/akuznets/Desktop/poster_buf/"
+save_folder = "."
 interp = Interpolator()
 
 A = screen_generator.raw_batch[...,0,:].get()
@@ -143,27 +178,27 @@ def to_cm_image(x):
     return Image.fromarray(np.uint8(colormap(x)*255))
 
 for i in range(A.shape[-1]):
-    to_cm_image(A[...,i]).save(save_folda + f"cascade_n{i}.png")
+    to_cm_image(A[...,i]).save(save_folder + f"cascade_n{i}.png")
 
 for i in range(len(B)):
     z = B[0].shape[0] // B[i].shape[0]
     zoom_factor = (z, z)
     y = zoomer(B[i], zoom_factor, order=0)
-    to_cm_image(y).save(save_folda + f"crop_n{i}.png")
+    to_cm_image(y).save(save_folder + f"crop_n{i}.png")
 
 for i in range(A.shape[-1]):
-    to_cm_image(C[...,i]).save(save_folda + f"interp_n{i}.png")
+    to_cm_image(C[...,i]).save(save_folder + f"interp_n{i}.png")
     
-to_cm_image(result).save(save_folda+"cascade_sum.png")
+to_cm_image(result).save(save_folder+"cascade_sum.png")
 
 z = B[0].shape[0] // D_p.shape[0]
 zoom_factor = (z, z)
 
-to_cm_image( zoomer(D_p, zoom_factor, order=0) ).save(save_folda + "periodic.png")
-to_cm_image( zoomer(D_s, zoom_factor, order=0) ).save(save_folda + "smooth.png")
+to_cm_image( zoomer(D_p, zoom_factor, order=0) ).save(save_folder + "periodic.png")
+to_cm_image( zoomer(D_s, zoom_factor, order=0) ).save(save_folder + "smooth.png")
 
-to_cm_image( zoomer(D_p, zoom_factor, order=3) ).save(save_folda + "periodic_interp.png")
-to_cm_image( zoomer(D_s, zoom_factor, order=3) ).save(save_folda + "smooth_interp.png")
+to_cm_image( zoomer(D_p, zoom_factor, order=3) ).save(save_folder + "periodic_interp.png")
+to_cm_image( zoomer(D_s, zoom_factor, order=3) ).save(save_folder + "smooth_interp.png")
 
 phases   = screen_generator.phase_buf[-2]
 phases_R = to_gray_image(phases.real.get())
@@ -173,8 +208,8 @@ phases_B = np.zeros_like(phases_R)
 phases_RGB   = np.stack([phases_R, phases_G, phases_B], axis=-2)
 phases_stack = [phases_RGB[...,i] for i in range(phases_RGB.shape[-1])]
 
-if not os.path.exists(save_folda+'pure_phase.gif'):
-    SaveGIF_RGB(phases_stack, duration=1e0, downscale=1, path=save_folda+'pure_phase.gif')
+if not os.path.exists(save_folder+'pure_phase.gif'):
+    SaveGIF_RGB(phases_stack, duration=1e0, downscale=1, path=save_folder+'pure_phase.gif')
 
 PSD_sample = screen_generator.vonKarmanPSD(screen_generator.f[...,0], r0, L0)
 
@@ -182,7 +217,7 @@ PSD_sample = np.log10(PSD_sample)
 PSD_sample[PSD_sample.shape[0]//2, PSD_sample.shape[1]//2] = PSD_sample.max()
 PSD_sample -= PSD_sample.min()
 PSD_sample /= PSD_sample.max()
-plt.imsave(save_folda + "PSD_sample.png", PSD_sample, cmap='gray')
+plt.imsave(save_folder + "PSD_sample.png", PSD_sample, cmap='gray')
 
 PSD_sqrt = np.sqrt(PSD_sample)
 PSD_sqrt = (PSD_sqrt - PSD_sqrt.min()) / (PSD_sqrt.max() - PSD_sqrt.min())
@@ -191,10 +226,10 @@ phases_RGB_PSD = phases_RGB * PSD_sqrt
 
 phases_stack_PSD = [ phases_RGB_PSD[...,i]/255 for i in range(phases_RGB.shape[-1]) ]
 
-if not os.path.exists(save_folda + 'PSD_and_phase.gif'):
-    SaveGIF_RGB(phases_stack_PSD, duration=1e0, downscale=1, path=save_folda+'PSD_and_phase.gif')
+if not os.path.exists(save_folder + 'PSD_and_phase.gif'):
+    SaveGIF_RGB(phases_stack_PSD, duration=1e0, downscale=1, path=save_folder+'PSD_and_phase.gif')
 
-SaveGIF_RGB(phases_stack_PSD, duration=1e0, downscale=1, path=save_folda+'PSD_and_phase.gif')  
+SaveGIF_RGB(phases_stack_PSD, duration=1e0, downscale=1, path=save_folder+'PSD_and_phase.gif')  
 
 #%%
 PSDs_cascade = []
@@ -252,7 +287,16 @@ plt.xlabel('Spatial frequency [1/m]')
 plt.ylabel(r'PSD $[nm^2 / \hspace{0.5} m^2]$')
 # plt.show()
 
-plt.savefig(save_folda + "PSD_reconstruction_reconst.pdf", dpi=300)
+plt.savefig(save_folder + "PSD_reconstruction_reconst.pdf", dpi=300)
+
+
+#%%
+for i in range(0,100,10):
+    # plt.imshow(screens_sequence[...,i].get())
+    plt.imshow(screens_sequence[...,i])
+    plt.axis('off')
+    plt.tight_layout()
+    plt.savefig(save_folder+f"phase_screen_{i}_CL.png", dpi=300)
 
 
 #%%
@@ -266,5 +310,5 @@ fig, axs = plt.subplots(1, A_.shape[-1], figsize=(20, 5))
 for i in range(A_.shape[-1]):
     axs[i].imshow(A_[...,i].get(), cmap='inferno', vmin=vmin, vmax=vmax)
     axs[i].axis('off')
-plt.savefig(f"C:/Users/akuznets/Desktop/poster_buf/phase_screens_line_{scenario}.pdf", dpi=300)
+plt.savefig(save_folder+f"phase_screens_line_{scenario}.pdf", dpi=300)
 

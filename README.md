@@ -24,7 +24,7 @@ A high-performance Python toolkit for FFT-based realistic atmospheric turbulence
 <img src="./demo/frozen_flow_2layers.gif" alt="Frozen Flow Turbulence" width="250">
 </a>
 <br>
-<em>(wind_speed=40 m/s, boiling_factor=0, 2 perpendicular layers)</em><br>
+<em>(wind_speed=40 m/s, boiling_factor=0, 2 layers)</em><br>
 </td>
 <td align="center">
 <h3>Mixed Turbulence</h3>
@@ -83,18 +83,18 @@ Check the `example.ipynb` to see the basic usage of the code.
 
 ## ► References
 
-Check the `demo` folder for the poster with references.
+Check the `demo` folder for the poster with the references.
 
 ## 📁 Project Structure
 
 ```
 FATMOSS/
-├── phase_generator.py     # Main phase screen generator
+├── phase_generator.py     # Main phase screen generator class
 ├── atmospheric_layer.py   # Atmospheric layer definitions
 ├── interpolate.py         # Screens upscaling utilities
 ├── misc.py                # Helper functions
 ├── example.ipynb          # Jupyter notebook examples
-├── test.py                # Test scenarios
+├── test.py                # Sandbox file
 ├── requirements.txt       # Python dependencies list
 └── settings.json          # Default configuration file
 ```

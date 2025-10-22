@@ -7,7 +7,7 @@ from atmospheric_layer import Layer
 
 
 class PhaseScreensGenerator:
-    def __init__(self, D, dx, dt, batch_size=100, n_cascades=3, double_precision=False, seed=None, debug_flag=False) -> None:
+    def __init__(self, D, dx, dt, batch_size=100, n_cascades=3, dynamic_PSD=False, seed=None, double_precision=False, debug_flag=False) -> None:
 
         if double_precision:
             self.datafloat     = xp.float64
@@ -17,6 +17,8 @@ class PhaseScreensGenerator:
             self.datafloat     = xp.float32
             self.datacomplex   = xp.complex64
             self.datafloat_cpu = np.float32
+
+        self.dynamic_PSD = dynamic_PSD # If PSD is time variable or not
 
         self.n_cascades = n_cascades
         self.batch_size = batch_size # [step]
@@ -44,8 +46,15 @@ class PhaseScreensGenerator:
         self.init_noise = xp.array(self.rng.normal(size=(self.N, self.N, 1)), dtype=self.datafloat)
         # Spatially-dependant phase retardation of the PSD's realisation phase, used to simulate boiling
         self.random_retardation = xp.asarray(self.rng.uniform(0, 1, size=(self.N,self.N,1)), dtype=self.datafloat) * dt
-
         self.current_batch_id = 0
+        
+        # Masks are used to supress the spatial frequencies that belong to other cascades
+        self.mask_outer = mask_circle( self.N, self.N/2, centered=True )
+        self.mask_inner = mask_circle( self.N, self.N/6, centered=True )
+        
+        if GPU_flag:
+            self.mask_outer = xp.array(self.mask_outer)
+            self.mask_inner = xp.array(self.mask_inner)
         
         # Generate tip/tilt modes to simulate directional moving of the frozen flow
         coords  = np.linspace(0, self.N-1, self.N) - self.N//2 + 0.5 * (1-self.N%2)
@@ -216,6 +225,8 @@ class PhaseScreensGenerator:
             self.deallocate_gpu_memory(full_cleanup=True)
         except:
             pass  # Ignore errors during cleanup
+        
+        gc.collect()
 
 
     def GeneratePSDGrids(self):
@@ -233,29 +244,57 @@ class PhaseScreensGenerator:
             dx_ = self.dx * 3**i # every next cascade zooms out frequencies by 3 to capture more low frequencies
             self.fx[...,i], self.fy[...,i], self.f[...,i], self.df[...,i] = self.freq_array(self.N, dx_) # [1/m]
         _ = self.crops.pop(-1)
+        
+        # Transfer frequency arrays to GPU if enabled
+        if GPU_flag:
+            self.fx = xp.asarray(self.fx)
+            self.fy = xp.asarray(self.fy)
+            self.f  = xp.asarray(self.f)
+            self.df = xp.asarray(self.df)
 
 
     def GeneratePSDCascade(self, PSD_spatial_func, boiler_func):
         # Pre-allocate arrays
         arrays_shape = [self.N, self.N, self.n_cascades]
-        PSDs_temporal = np.zeros(arrays_shape, dtype=self.datafloat_cpu) # Describes the temporal evolution of the PSD
-        PSDs_spatial  = np.zeros(arrays_shape, dtype=self.datafloat_cpu) # Contains spatial frequencies
+        PSDs_temporal = xp.zeros(arrays_shape, dtype=self.datafloat_cpu) # Describes the temporal evolution of the PSD
+        PSDs_spatial  = xp.zeros(arrays_shape, dtype=self.datafloat_cpu) # Contains spatial frequencies
 
+        # Generate spatial and temporal PSDs for each cascade
         for i in range(self.n_cascades):
             PSDs_spatial [...,i] = PSD_spatial_func(self.f[...,i]) * self.df[i]**2 # PSD spatial [nm^2/m^2]
             PSDs_temporal[...,i] = boiler_func(self.f[...,i]) # TODO: [??/??] units
+        # The last cascade has the most information about the low spatial frequencies
 
-        # Masks are used to supress the spatial frequencies that belong to other cascades
-        mask_outer = mask_circle( self.N, self.N/2, centered=True )
-        mask_inner = mask_circle( self.N, self.N/6, centered=True )
-
-        PSDs_spatial [...,:-1] *= (mask_outer-mask_inner)[..., np.newaxis]
-        PSDs_spatial [..., -1] *=  mask_outer # The last cascade has the most information about the low frequencies
-
-        PSDs_temporal[...,:-1] *= (mask_outer-mask_inner)[..., np.newaxis]
-        PSDs_temporal[..., -1] *=  mask_outer
+        # Maskout overlapping frequencies between cascades
+        PSDs_spatial [...,:-1] *= (self.mask_outer-self.mask_inner)[..., np.newaxis]
+        PSDs_spatial [..., -1] *=  self.mask_outer
         
+        PSDs_temporal[...,:-1] *= (self.mask_outer-self.mask_inner)[..., np.newaxis]
+        PSDs_temporal[..., -1] *=  self.mask_outer
+
         return PSDs_spatial, PSDs_temporal
+
+
+    def GenerateDynamicPSDCascade(self, PSD_spatial_func, boiler_func):
+        # Pre-allocate arrays
+        arrays_shape = [self.N, self.N, self.batch_size, self.n_cascades] # added temporal dimension
+        PSDs_temporal = xp.zeros(arrays_shape, dtype=self.datafloat_cpu) # Describes the temporal evolution of the PSD
+        PSDs_spatial  = xp.zeros(arrays_shape, dtype=self.datafloat_cpu) # Contains spatial frequencies
+
+        # Generate spatial and temporal PSDs for each cascade
+        for i in range(self.n_cascades):
+            PSDs_spatial [...,i] = PSD_spatial_func(self.f[...,i], self.t) * self.df[i]**2 # PSD spatial [nm^2/m^2]
+            PSDs_temporal[...,i] = boiler_func(self.f[...,i], self.t) # TODO: [??/??] units
+        # The last cascade has the most information about the low spatial frequencies
+
+        # Maskout overlapping frequencies between cascades
+        PSDs_spatial [...,:-1] *= (self.mask_outer-self.mask_inner)[..., np.newaxis, np.newaxis]
+        PSDs_spatial [..., -1] *=  self.mask_outer[..., np.newaxis]
+        
+        PSDs_temporal[...,:-1] *= (self.mask_outer-self.mask_inner)[..., np.newaxis, np.newaxis]
+        PSDs_temporal[..., -1] *=  self.mask_outer[..., np.newaxis]
+
+        return PSDs_spatial, PSDs_temporal # [W x H x t x n_cascades]
 
 
     def freq_array(self, N, dx):
@@ -276,7 +315,7 @@ class PhaseScreensGenerator:
         return phase_screen_nm
 
 
-    def screens_from_PSD_and_phase(self, PSD, complex_phase):
+    def screens_from_PSD_and_complex_noise(self, PSD, complex_phase):
         """Generate phase screens batch from PSD and random phase."""
         dimensions = complex_phase.shape
         # PSD_realizations = xp.zeros(dimensions, dtype=self.datacomplex)
@@ -305,7 +344,9 @@ class PhaseScreensGenerator:
             Atmospheric layer object with turbulence parameters
         """
         # Generate PSDs for the layer
-        layer.PSD_spatial, layer.PSD_temporal = self.GeneratePSDCascade(layer.PSD_spatial_func, layer.PSD_temporal_func)
+        if not self.dynamic_PSD:
+            layer.PSD_spatial, layer.PSD_temporal = self.GeneratePSDCascade(layer.PSD_spatial_func, layer.PSD_temporal_func)
+        
         self.layers.append(layer)
         self.n_layers = len(self.layers)
         
@@ -377,8 +418,7 @@ class PhaseScreensGenerator:
 
     def GenerateScreensBatch(self, PSD_spatial, PSD_temporal, wind_speed, wind_direction, boiling_factor):
         # Frames IDs with an additional temporal shift to simulate virtually infinite temporal evolution
-        t = xp.arange(self.batch_size, dtype=self.datafloat) + self.current_batch_id * self.batch_size
-        t = t[None, None, :] # [1 x 1 x batch_size]
+        t = self.t[None, None, :] # [1 x 1 x batch_size]
 
         # Generate cascaded phase screens (W x H x batch_size x N_cascades)
         screens_batch = xp.zeros([self.N, self.N, self.batch_size, self.n_cascades], dtype=self.datafloat)
@@ -393,13 +433,13 @@ class PhaseScreensGenerator:
             V = xp.array(wind_speed / self.dx * self.dt, dtype=self.datafloat) # [pixels/step]
             Vx_ = V * xp.cos(xp.deg2rad(xp.array(wind_direction, dtype=self.datafloat))) / 3**i
             Vy_ = V * xp.sin(xp.deg2rad(xp.array(wind_direction, dtype=self.datafloat))) / 3**i
-            # TODO: implement 2π wrapping
-            PSD_temporal_ = xp.array(PSD_temporal[...,i][..., None], self.datafloat)
+            # TODO: implement 2π wrapping to avoid tip/tilt growing forever
+            PSD_temporal_ = xp.atleast_3d(xp.array(PSD_temporal[...,i], self.datafloat))
             evolution = self.tip*Vx_ + self.tilt*Vy_ + self.random_retardation * boiling_factor * PSD_temporal_
             phi = t * evolution + self.init_noise
             random_complex_phase = xp.exp(2j*xp.pi * phi)
             
-            phase_buffer = self.screens_from_PSD_and_phase(PSD_spatial[...,i], random_complex_phase)
+            phase_buffer = self.screens_from_PSD_and_complex_noise(PSD_spatial[...,i], random_complex_phase)
         
             screens_batch[...,i] = self.interpolator.zoom(phase_buffer[self.crops[i]], i)
             phase_batch.append(random_complex_phase)
@@ -509,6 +549,14 @@ class PhaseScreensGenerator:
     def GenerateScreens(self, split_layers=False):
         if len(self.layers) == 0:
             raise ValueError("No atmospheric layers have been added. Please add at least one layer before generating screens.")
+        
+        self.t = xp.arange(self.batch_size, dtype=self.datafloat) + self.current_batch_id * self.batch_size
+     
+        if self.dynamic_PSD:
+            # Regenerate PSDs for all layers if the dynamic PSD update is enabled
+            for layer in self.layers:
+                layer.PSD_spatial, layer.PSD_temporal = self.GenerateDynamicPSDCascade(layer.PSD_spatial_func, layer.PSD_temporal_func)
+            
         
         if split_layers:
             screens_batch = [
