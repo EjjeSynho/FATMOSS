@@ -25,7 +25,7 @@ batch_size=100
 
 #%%
 screen_generator = PhaseScreensGenerator(D, dx, dt, batch_size=batch_size, n_cascades=3, seed=142, dynamic_PSD=True)
-
+#
 # Note that t is timestamps here (for simplicity)
 r0_f = lambda t: 0.1 + 0.1 / 100 * t
 L0_f = lambda t: 25  + 1 / 100 * t
