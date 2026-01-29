@@ -76,27 +76,34 @@ class PhaseScreensGenerator:
         """String representation of the PhaseScreensGenerator object."""
         info = []
         info.append(f"PhaseScreensGenerator Configuration:")
-        info.append(f"  Grid size: {self.N}x{self.N} pixels")
-        info.append(f"  Pixel size: {self.dx:.3f} m/pixel")
-        info.append(f"  Time step: {self.dt:.3f} s")
-        info.append(f"  Batch size: {self.batch_size} screens")
-        info.append(f"  Number of cascades: {self.n_cascades}")
-        # info.append(f"  Wavelength: {self.wvl_atmo} nm")
-        info.append(f"  Data precision: {'double' if self.datafloat == xp.float64 else 'single'}")
-        info.append(f"  Random seed: {self.seed}")
-        info.append(f"  Current batch ID: {self.current_batch_id}")
-        info.append(f"  Debug mode: {self.debug}")
-        info.append(f"  GPU acceleration: {GPU_flag}")
+        info.append(f"   Grid size: {self.N}×{self.N} [pixels]")
+        info.append(f"   Pixel size: {self.dx:.3f} [m/pixel]")
+        info.append(f"   Time step: {self.dt} [s]")
+        info.append(f"   Batch size: {self.batch_size} screens")
+        info.append(f"   Number of cascades: {self.n_cascades}")
+        # info.append(f"   Wavelength: {self.wvl_atmo} nm")
+        info.append(f"   Data precision: {'float64' if self.datafloat == xp.float64 else 'float32'}")
+        info.append(f"   Random seed: {self.seed}")
+        info.append(f"   Current batch ID: {self.current_batch_id}")
+        info.append(f"   Debug mode: {self.debug}")
+        info.append(f"   GPU acceleration: {GPU_flag}")
         
         info.append(f"\nAtmospheric Layers ({len(self.layers)}):")
         if self.layers:
             for i, layer in enumerate(self.layers):
-                info.append(f"  Layer {i+1}: weight={layer.weight:.3f}, "
-                           f"wind_speed={layer.wind_speed:.1f} m/s, "
-                           f"wind_direction={layer.wind_direction:.1f}°, "
-                           f"boiling_factor={layer.boiling_factor:.3f}")
+                info.append(f"   Layer {i+1}: weight = {layer.weight:.3f}, "
+                            f"altitude = {layer.altitude:.1f} [m], "
+                            f"wind speed = {layer.wind_speed:.1f} [m/s], "
+                            f"wind direction = {layer.wind_direction:.1f}°, "
+                            f"boiling factor = {layer.boiling_factor:.3f}")
         else:
-            info.append("  No layers added")
+            info.append("   No layers added")
+        
+        # Check if layers add up to 1
+        total_weight = sum(layer.weight for layer in self.layers)
+        
+        if total_weight < 0.999:
+            info.append("WARNING: Total layer weight is less than 1.0!")
         
         return "\n".join(info)
 

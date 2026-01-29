@@ -1,14 +1,13 @@
 import json
 import time
 import warnings
-import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from tqdm import tqdm
 from skimage.transform import rescale
 from IPython.display import HTML
 from typing import Dict, Any, Optional
-
+from PIL import Image
 
 with open('settings.json') as f:
     config = json.load(f)
@@ -16,7 +15,8 @@ with open('settings.json') as f:
 global GPU_flag
 GPU_flag = config['use_GPU']
 
-
+import numpy as np
+# Attempt enabling the GPU acceleration
 if GPU_flag:
     try:
         import cupy as cp
@@ -34,8 +34,11 @@ else:
     xp = np
     from scipy.ndimage import zoom
 
-import matplotlib.pyplot as plt
-from PIL import Image
+
+rad2mas  = 3600 * 180 * 1000 / np.pi
+rad2arc  = rad2mas / 1000
+deg2rad  = np.pi / 180
+asec2rad = np.pi / 180 / 3600
 
 
 def SaveVideo(frames_batch, output_video_path):
@@ -80,6 +83,7 @@ def SaveVideo(frames_batch, output_video_path):
     
 
 def SaveGIF(array, duration=1e3, scale=1, path='test.gif', colormap=plt.cm.viridis):
+    """ Saves a GIF animation from a 3D array or a list of PIL images. """
     # If the input is an array or a tensor, we need to convert it to a list of PIL images first
     if type(array) == np.ndarray:
         gif_anim = []
@@ -355,3 +359,19 @@ def BenchmarkScreensGenerator(
         print(f"Per layer: {result['time_per_screen_per_layer_ms']:.1f} ms")
         print(f"Per layer per cascade: {result['time_per_screen_per_layer_per_cascade_ms']:.1f} ms")
     return result
+
+
+def mask_circle(N, r, center=(0,0), centered=True):
+    """Generates a circular mask of radius r in a grid of size N."""
+    factor = 0.5 * (1-N%2)
+    if centered:
+        coord_range = xp.linspace(-N//2+N%2+factor, N//2-factor, N)
+    else:
+        coord_range = xp.linspace(0, N-1, N)
+    xx, yy = xp.meshgrid(coord_range-center[1], coord_range-center[0])
+    pupil_round = xp.zeros([N, N], dtype=xp.int32)
+    pupil_round[xp.sqrt(yy**2+xx**2) < r] = 1
+    return pupil_round
+
+
+circular_pupil = lambda resolution: mask_circle(N=resolution, r=resolution/2, centered=True)
